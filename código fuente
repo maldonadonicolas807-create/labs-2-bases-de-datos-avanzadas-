@@ -1,0 +1,149 @@
+-- ============================================================================
+-- Laboratorio 2: Índices y restricciones en Oracle
+-- Esquema: HR (Oracle Database 21c Express Edition - XEPDB1)
+-- Autores:
+--   - Nicolas Maldonado Silva
+--   - German Alexander Diaz Roncancio
+--   - Carlos Mario Cortes Orozco
+-- Asignatura: Bases de Datos Avanzadas - UNIR
+-- Fecha: 19/11/2026
+-- ============================================================================
+
+-- ----------------------------------------------------------------------------
+-- 4.1. Preparación del entorno y creación de las tablas base
+-- ----------------------------------------------------------------------------
+CREATE TABLE departments (
+    department_id   NUMBER(4)    CONSTRAINT dept_id_pk PRIMARY KEY,
+    department_name VARCHAR2(30) CONSTRAINT dept_name_nn NOT NULL,
+    manager_id      NUMBER(6),
+    location_id     NUMBER(4)
+);
+
+CREATE INDEX dept_loc_ix ON departments (location_id);
+
+CREATE TABLE employees (
+    employee_id    NUMBER(6)    CONSTRAINT emp_emp_id_pk PRIMARY KEY,
+    first_name     VARCHAR2(20),
+    last_name      VARCHAR2(25) CONSTRAINT emp_last_name_nn NOT NULL,
+    email          VARCHAR2(25) CONSTRAINT emp_email_nn NOT NULL
+                                CONSTRAINT emp_email_uk UNIQUE,
+    phone_number   VARCHAR2(20),
+    hire_date      DATE         CONSTRAINT emp_hire_date_nn NOT NULL,
+    job_id         VARCHAR2(10) CONSTRAINT emp_job_nn NOT NULL,
+    salary         NUMBER(8,2)  CONSTRAINT emp_salary_min CHECK (salary > 0),
+    commission_pct NUMBER(2,2),
+    manager_id     NUMBER(6)    CONSTRAINT emp_manager_fk REFERENCES employees (employee_id),
+    department_id  NUMBER(4)    CONSTRAINT emp_dept_fk REFERENCES departments (department_id)
+);
+
+CREATE INDEX emp_department_ix ON employees (department_id);
+CREATE INDEX emp_name_ix ON employees (last_name, first_name);
+
+-- Inserción de datos iniciales de prueba
+INSERT INTO departments VALUES (10, 'Administration', NULL, 1700);
+INSERT INTO departments VALUES (20, 'Marketing', NULL, 1800);
+INSERT INTO departments VALUES (50, 'Shipping', NULL, 1500);
+
+INSERT INTO employees VALUES (100, 'Steven', 'King', 'SKING', '515.123.4567', DATE '2003-06-17', 'AD_PRES', 24000, NULL, NULL, 10);
+INSERT INTO employees VALUES (101, 'Neena', 'Kochhar', 'NKOCHHAR', '515.123.4568', DATE '2005-09-21', 'AD_VP', 17000, NULL, 100, 10);
+INSERT INTO employees VALUES (102, 'Lex', 'De Haan', 'LDEHAAN', '515.123.4569', DATE '2001-01-13', 'AD_VP', 17000, NULL, 100, 20);
+
+COMMIT;
+
+-- ----------------------------------------------------------------------------
+-- 4.2. Consulta de índices y restricciones en el diccionario de datos
+-- ----------------------------------------------------------------------------
+SELECT table_name, index_name, uniqueness, status
+FROM user_indexes
+WHERE table_name IN ('EMPLOYEES', 'DEPARTMENTS')
+ORDER BY table_name, index_name;
+
+SELECT table_name, constraint_name, constraint_type, status, search_condition
+FROM user_constraints
+WHERE table_name IN ('EMPLOYEES', 'DEPARTMENTS')
+ORDER BY table_name, constraint_name;
+
+-- ----------------------------------------------------------------------------
+-- 4.3. Desactivación de restricciones, inserción de datos no válidos y prueba
+--      de reactivación (genera error ORA-02293 si existen datos inválidos)
+-- ----------------------------------------------------------------------------
+ALTER TABLE employees DISABLE CONSTRAINT emp_salary_min;
+ALTER TABLE employees DISABLE CONSTRAINT emp_dept_fk;
+ALTER TABLE employees DISABLE CONSTRAINT emp_email_uk;
+
+-- Inserción de registro con salario negativo (-500), departamento inexistente (999) y email repetido
+INSERT INTO employees VALUES (
+    201, 'Carlos', 'Mendez', 'SKING', '515.123.9999',
+    DATE '2024-05-10', 'IT_PROG', -500, NULL, 100, 999
+);
+
+SELECT employee_id, first_name, email, salary, department_id
+FROM employees
+WHERE employee_id = 201;
+
+-- Intento de reactivación con datos inconsistentes en la tabla (falla con ORA-02293)
+ALTER TABLE employees ENABLE CONSTRAINT emp_salary_min;
+
+-- ----------------------------------------------------------------------------
+-- 4.4. Corrección de datos, reactivación de restricciones y creación de
+--      DEPARTMENTS2 mediante subconsulta
+-- ----------------------------------------------------------------------------
+DELETE FROM employees WHERE employee_id = 201;
+COMMIT;
+
+ALTER TABLE employees ENABLE CONSTRAINT emp_salary_min;
+ALTER TABLE employees ENABLE CONSTRAINT emp_dept_fk;
+ALTER TABLE employees ENABLE CONSTRAINT emp_email_uk;
+
+CREATE TABLE departments2 AS
+SELECT * FROM departments;
+
+-- Comparación de restricciones e índices entre DEPARTMENTS y DEPARTMENTS2
+SELECT table_name, constraint_name, constraint_type, status
+FROM user_constraints
+WHERE table_name IN ('DEPARTMENTS', 'DEPARTMENTS2')
+ORDER BY table_name, constraint_name;
+
+SELECT table_name, index_name
+FROM user_indexes
+WHERE table_name IN ('DEPARTMENTS', 'DEPARTMENTS2')
+ORDER BY table_name, index_name;
+
+-- ----------------------------------------------------------------------------
+-- 4.5. Control de transacciones, SAVEPOINT, ROLLBACK y bloque anónimo PL/SQL
+-- ----------------------------------------------------------------------------
+UPDATE departments
+SET location_id = 2500
+WHERE department_id = 20;
+
+SAVEPOINT punto_intermedio;
+
+DELETE FROM departments WHERE department_id = 50;
+
+-- Reversión parcial hasta el punto de guardado
+ROLLBACK TO punto_intermedio;
+
+SELECT department_id, department_name, location_id
+FROM departments
+ORDER BY department_id;
+
+-- Bloque anónimo PL/SQL con reversión transaccional
+SET SERVEROUTPUT ON
+DECLARE
+    v_filas NUMBER;
+BEGIN
+    UPDATE departments
+    SET location_id = 9999
+    WHERE department_id = 10;
+
+    v_filas := SQL%ROWCOUNT;
+    DBMS_OUTPUT.PUT_LINE('Filas afectadas antes de ROLLBACK: ' || v_filas);
+
+    ROLLBACK;
+    DBMS_OUTPUT.PUT_LINE('Transacción revertida con ROLLBACK.');
+END;
+/
+
+SELECT department_id, location_id
+FROM departments
+WHERE department_id IN (10, 20);
